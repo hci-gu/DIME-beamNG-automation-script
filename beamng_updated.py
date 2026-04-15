@@ -458,6 +458,8 @@ class BeamNGWindowController:
         )
         self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
+        self.last_hwnd: Optional[int] = None
+        self.has_logged_match = False
 
     def start(self) -> None:
         if not self.enabled or self.thread is not None:
@@ -476,29 +478,39 @@ class BeamNGWindowController:
             self.thread.join(timeout=1.0)
 
     def _worker(self) -> None:
-        for attempt in range(BNG_WINDOW_ENFORCE_RETRIES):
-            if self.stop_event.is_set():
-                return
+        attempts_without_match = 0
+        interval_seconds = max(BNG_WINDOW_ENFORCE_INTERVAL_MS, 1) / 1000.0
 
+        while not self.stop_event.is_set():
             hwnd = self._find_window()
-            if hwnd is not None:
+            if hwnd is None:
+                attempts_without_match += 1
+                if attempts_without_match == BNG_WINDOW_ENFORCE_RETRIES:
+                    logging.warning(
+                        "Failed to find BeamNG window after %s attempts",
+                        BNG_WINDOW_ENFORCE_RETRIES,
+                    )
+                time.sleep(interval_seconds)
+                continue
+
+            attempts_without_match = 0
+            self.last_hwnd = hwnd
+
+            if not self.has_logged_match:
+                logging.info("Matched BeamNG window handle %s", hwnd)
+                self.has_logged_match = True
+
+            if not self._window_matches_target(hwnd):
                 if self._move_window(hwnd):
                     logging.info(
-                        "Moved BeamNG window to x=%s y=%s w=%s h=%s on attempt %s",
+                        "Enforced BeamNG window to x=%s y=%s w=%s h=%s",
                         BNG_WINDOW_X,
                         BNG_WINDOW_Y,
                         BNG_WINDOW_WIDTH,
                         BNG_WINDOW_HEIGHT,
-                        attempt + 1,
                     )
-                    return
 
-            time.sleep(max(BNG_WINDOW_ENFORCE_INTERVAL_MS, 1) / 1000.0)
-
-        logging.warning(
-            "Failed to find/move BeamNG window after %s attempts",
-            BNG_WINDOW_ENFORCE_RETRIES,
-        )
+            time.sleep(interval_seconds)
 
     def _find_window(self) -> Optional[int]:
         user32 = ctypes.windll.user32
@@ -547,6 +559,19 @@ class BeamNGWindowController:
             swp_nozorder | swp_noactivate | swp_showwindow,
         )
         return bool(result)
+
+    def _window_matches_target(self, hwnd: int) -> bool:
+        rect = ctypes.wintypes.RECT()
+        user32 = ctypes.windll.user32
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+
+        return (
+            rect.left == BNG_WINDOW_X
+            and rect.top == BNG_WINDOW_Y
+            and (rect.right - rect.left) == BNG_WINDOW_WIDTH
+            and (rect.bottom - rect.top) == BNG_WINDOW_HEIGHT
+        )
 
 
 def apply_beamng_display_settings(bng: BeamNGpy) -> None:
