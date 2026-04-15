@@ -130,6 +130,7 @@ BNG_WINDOW_Y = env_int("BNG_WINDOW_Y", 0)
 BNG_WINDOW_WIDTH = env_int("BNG_WINDOW_WIDTH", 0)
 BNG_WINDOW_HEIGHT = env_int("BNG_WINDOW_HEIGHT", 0)
 BNG_WINDOW_PLACEMENT = os.getenv("BNG_WINDOW_PLACEMENT", "")
+BNG_SHOW_FPS = env_flag("BNG_SHOW_FPS", True)
 
 
 @dataclass(frozen=True)
@@ -358,6 +359,27 @@ def apply_beamng_display_settings(bng: BeamNGpy) -> None:
             BNG_RESOLUTION or "<unchanged>",
             window_placement or "<unchanged>",
         )
+
+
+def enable_beamng_fps_overlay(bng: BeamNGpy) -> None:
+    if not BNG_SHOW_FPS:
+        return
+
+    last_error: Optional[Exception] = None
+    command_targets = [getattr(bng, "control", None), bng]
+
+    for target in command_targets:
+        if target is None or not hasattr(target, "queue_lua_command"):
+            continue
+
+        try:
+            target.queue_lua_command('metrics("fps")')
+            logging.info("Enabled BeamNG FPS overlay")
+            return
+        except Exception as exc:
+            last_error = exc
+
+    logging.warning("Failed to enable BeamNG FPS overlay: %s", last_error)
 
 
 RESPAWN_CHECKPOINTS = [
@@ -1061,6 +1083,7 @@ def main() -> None:
 
         wait_for_scenario_start(bng)
         scenario.update()
+        enable_beamng_fps_overlay(bng)
         obs_controller.start_recording()
 
         speech.start()
