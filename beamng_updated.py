@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -317,22 +318,17 @@ class OBSController:
 
 
 def build_window_placement(x: int, y: int, width: int, height: int) -> str:
-    return f"0 1 -1 -1 -1 -1 {x} {y} {y + height} {x + width}"
+    return f"0 1 -1 -1 -1 -1 {x} {y} {x + width} {y + height}"
 
 
-def apply_beamng_display_settings(bng: BeamNGpy) -> None:
-    if not BNG_FORCE_GRAPHICS:
-        return
-
-    changed = False
+def get_desired_display_settings() -> dict[str, str]:
+    settings: dict[str, str] = {}
 
     if BNG_DISPLAY_MODE:
-        bng.settings.change("GraphicDisplayModes", BNG_DISPLAY_MODE)
-        changed = True
+        settings["GraphicDisplayModes"] = BNG_DISPLAY_MODE
 
     if BNG_RESOLUTION:
-        bng.settings.change("GraphicDisplayResolutions", BNG_RESOLUTION)
-        changed = True
+        settings["GraphicDisplayResolutions"] = BNG_RESOLUTION
 
     window_placement = BNG_WINDOW_PLACEMENT
     if (
@@ -348,16 +344,119 @@ def apply_beamng_display_settings(bng: BeamNGpy) -> None:
         )
 
     if window_placement:
-        bng.settings.change("WindowPlacement", window_placement)
+        settings["WindowPlacement"] = window_placement
+
+    return settings
+
+
+def write_beamng_json_settings(path: Path, settings: dict[str, str]) -> bool:
+    try:
+        data: dict[str, Any] = {}
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+
+        data.update(settings)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        return True
+    except Exception as exc:
+        logging.warning("Failed writing BeamNG JSON settings %s: %s", path, exc)
+        return False
+
+
+def write_beamng_ini_settings(path: Path, settings: dict[str, str]) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            original_lines = path.read_text(encoding="utf-8").splitlines()
+        else:
+            original_lines = []
+
+        pending = dict(settings)
+        output_lines: list[str] = []
+
+        for line in original_lines:
+            stripped = line.strip()
+            if (
+                stripped
+                and "=" in line
+                and not stripped.startswith(("#", ";", "["))
+            ):
+                key, _ = line.split("=", 1)
+                normalized_key = key.strip()
+                if normalized_key in pending:
+                    output_lines.append(f"{normalized_key} = {pending.pop(normalized_key)}")
+                    continue
+
+            output_lines.append(line)
+
+        for key, value in pending.items():
+            output_lines.append(f"{key} = {value}")
+
+        path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+        return True
+    except Exception as exc:
+        logging.warning("Failed writing BeamNG INI settings %s: %s", path, exc)
+        return False
+
+
+def persist_beamng_display_settings(user_path: Optional[str]) -> bool:
+    if not BNG_FORCE_GRAPHICS:
+        return False
+
+    if not user_path:
+        logging.warning(
+            "BNG_FORCE_GRAPHICS is enabled but BNG_USER_PATH is not set, so "
+            "pre-launch settings persistence is unavailable for this run."
+        )
+        return False
+
+    settings = get_desired_display_settings()
+    if not settings:
+        return False
+
+    settings_dir = Path(user_path) / "settings"
+    targets = [
+        settings_dir / "game-settings.ini",
+        settings_dir / "cloud" / "game-settings-cloud.ini",
+        settings_dir / "settings.json",
+    ]
+
+    wrote_any = False
+    for target in targets:
+        if target.suffix == ".json":
+            wrote_any = write_beamng_json_settings(target, settings) or wrote_any
+        else:
+            wrote_any = write_beamng_ini_settings(target, settings) or wrote_any
+
+    if wrote_any:
+        logging.info(
+            "Persisted BeamNG display settings under %s: %s",
+            settings_dir,
+            settings,
+        )
+
+    return wrote_any
+
+
+def apply_beamng_display_settings(bng: BeamNGpy) -> None:
+    if not BNG_FORCE_GRAPHICS:
+        return
+
+    settings = get_desired_display_settings()
+    changed = False
+
+    for key, value in settings.items():
+        bng.settings.change(key, value)
         changed = True
 
     if changed:
         bng.settings.apply_graphics()
         logging.info(
-            "Applied BeamNG display settings: mode=%s resolution=%s window=%s",
-            BNG_DISPLAY_MODE or "<unchanged>",
-            BNG_RESOLUTION or "<unchanged>",
-            window_placement or "<unchanged>",
+            "Applied BeamNG display settings via API: %s",
+            settings,
         )
 
 
@@ -1062,9 +1161,18 @@ def main() -> None:
         logging.info("Using BeamNG home: %s", resolved_bng_home)
         if BNG_USER_PATH:
             logging.info("Using BeamNG user path override: %s", BNG_USER_PATH)
+            persist_beamng_display_settings(BNG_USER_PATH)
         bng = BeamNGpy("localhost", 64256, home=resolved_bng_home, user=BNG_USER_PATH)
         bng.open(None, "-gfx", GRAPHICS_BACKEND)
         logging.info("Connected to BeamNG.tech")
+        try:
+            actual_user_path = bng.system.get_environment_paths().get("user")
+        except Exception as exc:
+            logging.warning("Failed to query BeamNG user path: %s", exc)
+            actual_user_path = None
+
+        if actual_user_path and actual_user_path != BNG_USER_PATH:
+            persist_beamng_display_settings(actual_user_path)
         apply_beamng_display_settings(bng)
 
         scenario, player_vehicle, npc_vehicle_map = build_scenario()
