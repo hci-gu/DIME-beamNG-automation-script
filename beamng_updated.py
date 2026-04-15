@@ -113,17 +113,17 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-OBS_ENABLE_RECORDING = env_flag("OBS_ENABLE_RECORDING", False)
-OBS_HOST = os.getenv("OBS_HOST", "localhost")
-OBS_PORT = env_int("OBS_PORT", 4455)
-OBS_PASSWORD = os.getenv("OBS_PASSWORD", "")
-OBS_SCENE_NAME = os.getenv("OBS_SCENE_NAME", "BeamNG Single Window")
-OBS_SOURCE_NAME = os.getenv("OBS_SOURCE_NAME", "BeamNG Window")
-OBS_SOURCE_KIND = os.getenv("OBS_SOURCE_KIND", "window_capture")
-OBS_WINDOW = os.getenv("OBS_WINDOW", "")
-OBS_RECORD_DIRECTORY = os.getenv("OBS_RECORD_DIRECTORY", "")
-OBS_CAPTURE_CURSOR = env_flag("OBS_CAPTURE_CURSOR", False)
-OBS_WINDOW_PRIORITY = env_int("OBS_WINDOW_PRIORITY", 1)
+OBS_ENABLE_RECORDING = True
+OBS_HOST = "localhost"
+OBS_PORT = 4455
+OBS_PASSWORD = ""
+OBS_SCENE_NAME = "BeamNG Single Window"
+OBS_SOURCE_NAME = "BeamNG Window"
+OBS_SOURCE_KIND = "window_capture"
+OBS_WINDOW = ""
+OBS_RECORD_DIRECTORY = ""
+OBS_CAPTURE_CURSOR = False
+OBS_WINDOW_PRIORITY = 1
 
 BNG_USER_PATH = None
 BNG_FORCE_GRAPHICS = True
