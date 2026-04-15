@@ -119,11 +119,10 @@ OBS_PORT = 4455
 OBS_PASSWORD = ""
 OBS_SCENE_NAME = "BeamNG Single Window"
 OBS_SOURCE_NAME = "BeamNG Window"
-OBS_SOURCE_KIND = "window_capture"
-OBS_WINDOW = ""
+OBS_SOURCE_KIND = "game_capture"
 OBS_RECORD_DIRECTORY = ""
 OBS_CAPTURE_CURSOR = False
-OBS_WINDOW_PRIORITY = 1
+OBS_GAME_CAPTURE_MODE = "window"
 
 BNG_USER_PATH = None
 BNG_FORCE_GRAPHICS = True
@@ -199,6 +198,7 @@ class OBSController:
     def __init__(self) -> None:
         self.client: Any = None
         self.recording_started = False
+        self.target_window_spec = ""
 
     def connect(self) -> None:
         if not OBS_ENABLE_RECORDING:
@@ -248,6 +248,21 @@ class OBSController:
         except Exception as exc:
             logging.warning("Failed to set up OBS single-window capture: %s", exc)
 
+    def set_target_window(self, window_spec: str) -> None:
+        if not window_spec:
+            return
+
+        self.target_window_spec = window_spec
+        if self.client is None:
+            return
+
+        try:
+            settings = self._build_capture_settings()
+            self.client.set_input_settings(OBS_SOURCE_NAME, settings, True)
+            logging.info("Updated OBS game capture target to %r", window_spec)
+        except Exception as exc:
+            logging.warning("Failed to update OBS game capture target: %s", exc)
+
     def start_recording(self) -> None:
         if self.client is None or self.recording_started:
             return
@@ -286,7 +301,7 @@ class OBSController:
             self._field(source, "input_name", "inputName")
             for source in getattr(self.client.get_input_list(), "inputs", [])
         }
-        settings = self._build_window_capture_settings()
+        settings = self._build_capture_settings()
 
         if OBS_SOURCE_NAME in input_names:
             if settings:
@@ -301,19 +316,19 @@ class OBSController:
             True,
         )
 
-    def _build_window_capture_settings(self) -> dict[str, Any]:
+    def _build_capture_settings(self) -> dict[str, Any]:
         settings: dict[str, Any] = {"capture_cursor": OBS_CAPTURE_CURSOR}
 
-        if OBS_SOURCE_KIND == "window_capture":
-            settings["priority"] = OBS_WINDOW_PRIORITY
+        if OBS_SOURCE_KIND == "game_capture":
+            settings["capture_mode"] = OBS_GAME_CAPTURE_MODE
 
-        if OBS_WINDOW:
-            settings["window"] = OBS_WINDOW
+        if self.target_window_spec:
+            settings["window"] = self.target_window_spec
         else:
             logging.warning(
-                "OBS_WINDOW is not set. OBS will create/update the source, but you may "
-                "need to select the BeamNG window once in OBS and then reuse that exact "
-                "window identifier via OBS_WINDOW for fully unattended startup."
+                "OBS target window is not known yet. OBS will create/update the source, "
+                "but the BeamNG session will only be bound automatically after a matching "
+                "window is detected."
             )
 
         return settings
@@ -542,9 +557,10 @@ class BeamNGWindowController:
 
             if not self.has_logged_match:
                 self._diag(
-                    "Matched BeamNG window handle %s title=%r exe=%r",
+                    "Matched BeamNG window handle %s title=%r class=%r exe=%r",
                     hwnd,
                     self._get_window_title(hwnd),
+                    self._get_window_class(hwnd),
                     self._get_window_exe(hwnd),
                 )
                 self.has_logged_match = True
@@ -632,6 +648,7 @@ class BeamNGWindowController:
                 return True
 
             title = self._get_window_title(hwnd)
+            class_name = self._get_window_class(hwnd)
             exe_name = self._get_window_exe(hwnd)
             rect = ctypes.wintypes.RECT()
             if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -650,6 +667,7 @@ class BeamNGWindowController:
                     {
                         "hwnd": hwnd,
                         "title": title,
+                        "class": class_name,
                         "exe": exe_name,
                         "left": rect.left,
                         "top": rect.top,
@@ -670,15 +688,34 @@ class BeamNGWindowController:
 
         for candidate in candidates:
             self._diag(
-                "BeamNG candidate hwnd=%s exe=%r title=%r rect=(%s,%s,%s,%s)",
+                "BeamNG candidate hwnd=%s exe=%r class=%r title=%r rect=(%s,%s,%s,%s)",
                 candidate["hwnd"],
                 candidate["exe"],
+                candidate["class"],
                 candidate["title"],
                 candidate["left"],
                 candidate["top"],
                 candidate["width"],
                 candidate["height"],
             )
+
+    def wait_for_window_spec(self, timeout_seconds: float = 15.0) -> str:
+        deadline = time.time() + timeout_seconds
+        interval_seconds = max(BNG_WINDOW_ENFORCE_INTERVAL_MS, 1) / 1000.0
+
+        while time.time() < deadline:
+            hwnd = self._find_window()
+            if hwnd is not None:
+                return self._build_obs_window_spec(hwnd)
+            time.sleep(interval_seconds)
+
+        return ""
+
+    def _build_obs_window_spec(self, hwnd: int) -> str:
+        title = self._get_window_title(hwnd)
+        class_name = self._get_window_class(hwnd)
+        exe_name = self._get_window_exe(hwnd)
+        return f"{title}:{class_name}:{exe_name}"
 
     @staticmethod
     def _get_window_title(hwnd: int) -> str:
@@ -689,6 +726,14 @@ class BeamNGWindowController:
 
         buffer = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buffer, len(buffer))
+        return buffer.value
+
+    @staticmethod
+    def _get_window_class(hwnd: int) -> str:
+        user32 = ctypes.windll.user32
+        buffer = ctypes.create_unicode_buffer(256)
+        if user32.GetClassNameW(hwnd, buffer, len(buffer)) <= 0:
+            return ""
         return buffer.value
 
     @staticmethod
@@ -1446,6 +1491,11 @@ def main() -> None:
         bng.open(None, "-gfx", GRAPHICS_BACKEND)
         logging.info("Connected to BeamNG.tech")
         window_controller.start()
+        obs_window_spec = window_controller.wait_for_window_spec()
+        if obs_window_spec:
+            obs_controller.set_target_window(obs_window_spec)
+        else:
+            logging.warning("Unable to resolve BeamNG window for OBS game capture")
         try:
             actual_user_path = bng.system.get_environment_paths().get("user")
         except Exception as exc:
@@ -1472,6 +1522,9 @@ def main() -> None:
 
         wait_for_scenario_start(bng)
         scenario.update()
+        obs_window_spec = window_controller.wait_for_window_spec(timeout_seconds=5.0)
+        if obs_window_spec:
+            obs_controller.set_target_window(obs_window_spec)
         enable_beamng_fps_overlay(bng)
         obs_controller.start_recording()
 
