@@ -463,14 +463,48 @@ class BeamNGWindowController:
         self.has_logged_match = False
         self.did_log_candidates = False
 
+    def _diag(self, message: str, *args: Any) -> None:
+        formatted = message % args if args else message
+        logging.warning(formatted)
+        print(formatted, flush=True)
+
+    def _disabled_reasons(self) -> list[str]:
+        reasons: list[str] = []
+        if not BNG_ENFORCE_WINDOW:
+            reasons.append("BNG_ENFORCE_WINDOW is false")
+        if not sys.platform.startswith("win"):
+            reasons.append(f"platform is {sys.platform!r}, not Windows")
+        if BNG_WINDOW_WIDTH <= 0:
+            reasons.append(f"BNG_WINDOW_WIDTH={BNG_WINDOW_WIDTH}")
+        if BNG_WINDOW_HEIGHT <= 0:
+            reasons.append(f"BNG_WINDOW_HEIGHT={BNG_WINDOW_HEIGHT}")
+        return reasons
+
     def start(self) -> None:
-        if not self.enabled or self.thread is not None:
+        if self.thread is not None:
+            return
+
+        if not self.enabled:
+            self._diag(
+                "BeamNG window enforcer disabled: %s",
+                "; ".join(self._disabled_reasons()) or "unknown reason",
+            )
             return
 
         try:
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
             pass
+
+        self._diag(
+            "BeamNG window enforcer starting: title=%r x=%s y=%s w=%s h=%s interval_ms=%s",
+            BNG_WINDOW_TITLE,
+            BNG_WINDOW_X,
+            BNG_WINDOW_Y,
+            BNG_WINDOW_WIDTH,
+            BNG_WINDOW_HEIGHT,
+            BNG_WINDOW_ENFORCE_INTERVAL_MS,
+        )
 
         self.thread = threading.Thread(
             target=self._worker,
@@ -496,7 +530,7 @@ class BeamNGWindowController:
                     self._log_candidate_windows()
                     self.did_log_candidates = True
                 if attempts_without_match == BNG_WINDOW_ENFORCE_RETRIES:
-                    logging.warning(
+                    self._diag(
                         "Failed to find BeamNG window after %s attempts",
                         BNG_WINDOW_ENFORCE_RETRIES,
                     )
@@ -507,7 +541,7 @@ class BeamNGWindowController:
             self.last_hwnd = hwnd
 
             if not self.has_logged_match:
-                logging.info(
+                self._diag(
                     "Matched BeamNG window handle %s title=%r exe=%r",
                     hwnd,
                     self._get_window_title(hwnd),
@@ -517,7 +551,7 @@ class BeamNGWindowController:
 
             if not self._window_matches_target(hwnd):
                 if self._move_window(hwnd):
-                    logging.info(
+                    self._diag(
                         "Enforced BeamNG window to x=%s y=%s w=%s h=%s",
                         BNG_WINDOW_X,
                         BNG_WINDOW_Y,
@@ -631,11 +665,11 @@ class BeamNGWindowController:
     def _log_candidate_windows(self) -> None:
         candidates = self._collect_candidate_windows()
         if not candidates:
-            logging.info("No BeamNG candidate windows found yet")
+            self._diag("No BeamNG candidate windows found yet")
             return
 
         for candidate in candidates:
-            logging.info(
+            self._diag(
                 "BeamNG candidate hwnd=%s exe=%r title=%r rect=(%s,%s,%s,%s)",
                 candidate["hwnd"],
                 candidate["exe"],
