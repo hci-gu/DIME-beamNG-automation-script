@@ -48,7 +48,7 @@ SCENARIO_DESCRIPTION = "You may continue when ready."
 SCENARIO_AUTHORS = "University of Gothenburg"
 SCENARIO_SETTINGS = {"Start Time": 0}
 
-BNG_HOME = r"C:\Users\Rob\BeamNG\BeamNG.tech.v0.35.5.0\BeamNG.tech.v0.35.5.0"
+BNG_HOME = r"C:\BeamNG.tech.v0.38.3.0\BeamNG.tech.v0.38.3.0"
 GRAPHICS_BACKEND = "vk"
 
 PLAYER_SPAWN: Vec3 = (501, -877, 41.0)
