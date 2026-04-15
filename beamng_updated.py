@@ -139,6 +139,7 @@ BNG_ENFORCE_WINDOW = env_flag("BNG_ENFORCE_WINDOW", True)
 BNG_WINDOW_TITLE = os.getenv("BNG_WINDOW_TITLE", "BeamNG")
 BNG_WINDOW_ENFORCE_RETRIES = env_int("BNG_WINDOW_ENFORCE_RETRIES", 60)
 BNG_WINDOW_ENFORCE_INTERVAL_MS = env_int("BNG_WINDOW_ENFORCE_INTERVAL_MS", 500)
+BNG_WINDOW_DEBUG = env_flag("BNG_WINDOW_DEBUG", True)
 
 
 @dataclass(frozen=True)
@@ -460,10 +461,16 @@ class BeamNGWindowController:
         self.stop_event = threading.Event()
         self.last_hwnd: Optional[int] = None
         self.has_logged_match = False
+        self.did_log_candidates = False
 
     def start(self) -> None:
         if not self.enabled or self.thread is not None:
             return
+
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
         self.thread = threading.Thread(
             target=self._worker,
@@ -485,6 +492,9 @@ class BeamNGWindowController:
             hwnd = self._find_window()
             if hwnd is None:
                 attempts_without_match += 1
+                if BNG_WINDOW_DEBUG and not self.did_log_candidates:
+                    self._log_candidate_windows()
+                    self.did_log_candidates = True
                 if attempts_without_match == BNG_WINDOW_ENFORCE_RETRIES:
                     logging.warning(
                         "Failed to find BeamNG window after %s attempts",
@@ -497,7 +507,12 @@ class BeamNGWindowController:
             self.last_hwnd = hwnd
 
             if not self.has_logged_match:
-                logging.info("Matched BeamNG window handle %s", hwnd)
+                logging.info(
+                    "Matched BeamNG window handle %s title=%r exe=%r",
+                    hwnd,
+                    self._get_window_title(hwnd),
+                    self._get_window_exe(hwnd),
+                )
                 self.has_logged_match = True
 
             if not self._window_matches_target(hwnd):
@@ -513,42 +528,37 @@ class BeamNGWindowController:
             time.sleep(interval_seconds)
 
     def _find_window(self) -> Optional[int]:
-        user32 = ctypes.windll.user32
-        matches: list[int] = []
+        candidates = self._collect_candidate_windows()
+        if not candidates:
+            return None
 
-        enum_proc = ctypes.WINFUNCTYPE(
-            ctypes.c_bool,
-            ctypes.wintypes.HWND,
-            ctypes.wintypes.LPARAM,
+        candidates.sort(
+            key=lambda item: (
+                0 if item["exe"].lower().startswith("beamng") else 1,
+                0 if BNG_WINDOW_TITLE.lower() in item["title"].lower() else 1,
+                -(item["width"] * item["height"]),
+            )
         )
-
-        def callback(hwnd: int, _lparam: int) -> bool:
-            if not user32.IsWindowVisible(hwnd):
-                return True
-
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length <= 0:
-                return True
-
-            buffer = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buffer, len(buffer))
-            title = buffer.value
-
-            if BNG_WINDOW_TITLE.lower() in title.lower():
-                matches.append(hwnd)
-            return True
-
-        user32.EnumWindows(enum_proc(callback), 0)
-        return matches[0] if matches else None
+        return int(candidates[0]["hwnd"])
 
     def _move_window(self, hwnd: int) -> bool:
         user32 = ctypes.windll.user32
         sw_restore = 9
+        sw_show_normal = 1
         swp_nozorder = 0x0004
         swp_noactivate = 0x0010
         swp_showwindow = 0x0040
 
         user32.ShowWindow(hwnd, sw_restore)
+        user32.ShowWindow(hwnd, sw_show_normal)
+        user32.MoveWindow(
+            hwnd,
+            BNG_WINDOW_X,
+            BNG_WINDOW_Y,
+            BNG_WINDOW_WIDTH,
+            BNG_WINDOW_HEIGHT,
+            True,
+        )
         result = user32.SetWindowPos(
             hwnd,
             0,
@@ -572,6 +582,108 @@ class BeamNGWindowController:
             and (rect.right - rect.left) == BNG_WINDOW_WIDTH
             and (rect.bottom - rect.top) == BNG_WINDOW_HEIGHT
         )
+
+    def _collect_candidate_windows(self) -> list[dict[str, Any]]:
+        user32 = ctypes.windll.user32
+        matches: list[dict[str, Any]] = []
+
+        enum_proc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool,
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.LPARAM,
+        )
+
+        def callback(hwnd: int, _lparam: int) -> bool:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+
+            title = self._get_window_title(hwnd)
+            exe_name = self._get_window_exe(hwnd)
+            rect = ctypes.wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width <= 0 or height <= 0:
+                return True
+
+            title_match = BNG_WINDOW_TITLE.lower() in title.lower()
+            exe_match = exe_name.lower().startswith("beamng")
+
+            if title_match or exe_match:
+                matches.append(
+                    {
+                        "hwnd": hwnd,
+                        "title": title,
+                        "exe": exe_name,
+                        "left": rect.left,
+                        "top": rect.top,
+                        "width": width,
+                        "height": height,
+                    }
+                )
+            return True
+
+        user32.EnumWindows(enum_proc(callback), 0)
+        return matches
+
+    def _log_candidate_windows(self) -> None:
+        candidates = self._collect_candidate_windows()
+        if not candidates:
+            logging.info("No BeamNG candidate windows found yet")
+            return
+
+        for candidate in candidates:
+            logging.info(
+                "BeamNG candidate hwnd=%s exe=%r title=%r rect=(%s,%s,%s,%s)",
+                candidate["hwnd"],
+                candidate["exe"],
+                candidate["title"],
+                candidate["left"],
+                candidate["top"],
+                candidate["width"],
+                candidate["height"],
+            )
+
+    @staticmethod
+    def _get_window_title(hwnd: int) -> str:
+        user32 = ctypes.windll.user32
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, len(buffer))
+        return buffer.value
+
+    @staticmethod
+    def _get_window_exe(hwnd: int) -> str:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        process_id = ctypes.wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if not process_id.value:
+            return ""
+
+        process_handle = kernel32.OpenProcess(0x1000, False, process_id.value)
+        if not process_handle:
+            return ""
+
+        try:
+            buffer_length = ctypes.wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(buffer_length.value)
+            if kernel32.QueryFullProcessImageNameW(
+                process_handle,
+                0,
+                buffer,
+                ctypes.byref(buffer_length),
+            ):
+                return Path(buffer.value).name
+        finally:
+            kernel32.CloseHandle(process_handle)
+
+        return ""
 
 
 def apply_beamng_display_settings(bng: BeamNGpy) -> None:
