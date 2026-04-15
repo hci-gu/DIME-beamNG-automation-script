@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import json
 import logging
 import math
 import os
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
@@ -132,6 +135,10 @@ BNG_WINDOW_WIDTH = env_int("BNG_WINDOW_WIDTH", 0)
 BNG_WINDOW_HEIGHT = env_int("BNG_WINDOW_HEIGHT", 0)
 BNG_WINDOW_PLACEMENT = os.getenv("BNG_WINDOW_PLACEMENT", "")
 BNG_SHOW_FPS = env_flag("BNG_SHOW_FPS", True)
+BNG_ENFORCE_WINDOW = env_flag("BNG_ENFORCE_WINDOW", True)
+BNG_WINDOW_TITLE = os.getenv("BNG_WINDOW_TITLE", "BeamNG")
+BNG_WINDOW_ENFORCE_RETRIES = env_int("BNG_WINDOW_ENFORCE_RETRIES", 60)
+BNG_WINDOW_ENFORCE_INTERVAL_MS = env_int("BNG_WINDOW_ENFORCE_INTERVAL_MS", 500)
 
 
 @dataclass(frozen=True)
@@ -439,6 +446,107 @@ def persist_beamng_display_settings(user_path: Optional[str]) -> bool:
         )
 
     return wrote_any
+
+
+class BeamNGWindowController:
+    def __init__(self) -> None:
+        self.enabled = (
+            BNG_ENFORCE_WINDOW
+            and sys.platform.startswith("win")
+            and BNG_WINDOW_WIDTH > 0
+            and BNG_WINDOW_HEIGHT > 0
+        )
+        self.thread: Optional[threading.Thread] = None
+        self.stop_event = threading.Event()
+
+    def start(self) -> None:
+        if not self.enabled or self.thread is not None:
+            return
+
+        self.thread = threading.Thread(
+            target=self._worker,
+            name="beamng-window-enforcer",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=1.0)
+
+    def _worker(self) -> None:
+        for attempt in range(BNG_WINDOW_ENFORCE_RETRIES):
+            if self.stop_event.is_set():
+                return
+
+            hwnd = self._find_window()
+            if hwnd is not None:
+                if self._move_window(hwnd):
+                    logging.info(
+                        "Moved BeamNG window to x=%s y=%s w=%s h=%s on attempt %s",
+                        BNG_WINDOW_X,
+                        BNG_WINDOW_Y,
+                        BNG_WINDOW_WIDTH,
+                        BNG_WINDOW_HEIGHT,
+                        attempt + 1,
+                    )
+                    return
+
+            time.sleep(max(BNG_WINDOW_ENFORCE_INTERVAL_MS, 1) / 1000.0)
+
+        logging.warning(
+            "Failed to find/move BeamNG window after %s attempts",
+            BNG_WINDOW_ENFORCE_RETRIES,
+        )
+
+    def _find_window(self) -> Optional[int]:
+        user32 = ctypes.windll.user32
+        matches: list[int] = []
+
+        enum_proc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool,
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.LPARAM,
+        )
+
+        def callback(hwnd: int, _lparam: int) -> bool:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, len(buffer))
+            title = buffer.value
+
+            if BNG_WINDOW_TITLE.lower() in title.lower():
+                matches.append(hwnd)
+            return True
+
+        user32.EnumWindows(enum_proc(callback), 0)
+        return matches[0] if matches else None
+
+    def _move_window(self, hwnd: int) -> bool:
+        user32 = ctypes.windll.user32
+        sw_restore = 9
+        swp_nozorder = 0x0004
+        swp_noactivate = 0x0010
+        swp_showwindow = 0x0040
+
+        user32.ShowWindow(hwnd, sw_restore)
+        result = user32.SetWindowPos(
+            hwnd,
+            0,
+            BNG_WINDOW_X,
+            BNG_WINDOW_Y,
+            BNG_WINDOW_WIDTH,
+            BNG_WINDOW_HEIGHT,
+            swp_nozorder | swp_noactivate | swp_showwindow,
+        )
+        return bool(result)
 
 
 def apply_beamng_display_settings(bng: BeamNGpy) -> None:
@@ -1148,6 +1256,7 @@ def main() -> None:
 
     bng: Optional[BeamNGpy] = None
     obs_controller = OBSController()
+    window_controller = BeamNGWindowController()
     speech = SpeechController()
     resolved_bng_home = resolve_beamng_home(BNG_HOME)
     respawn_controller = RespawnController(
@@ -1165,6 +1274,7 @@ def main() -> None:
         bng = BeamNGpy("localhost", 64256, home=resolved_bng_home, user=BNG_USER_PATH)
         bng.open(None, "-gfx", GRAPHICS_BACKEND)
         logging.info("Connected to BeamNG.tech")
+        window_controller.start()
         try:
             actual_user_path = bng.system.get_environment_paths().get("user")
         except Exception as exc:
@@ -1206,6 +1316,7 @@ def main() -> None:
     except Exception as exc:
         logging.error("An unexpected error occurred: %s", exc, exc_info=True)
     finally:
+        window_controller.stop()
         obs_controller.stop_recording()
         speech.stop()
         respawn_controller.stop()
