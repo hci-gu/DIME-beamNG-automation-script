@@ -128,7 +128,7 @@ BNG_USER_PATH = None
 BNG_FORCE_GRAPHICS = True
 BNG_DISPLAY_MODE = "Window"
 BNG_RESOLUTION = "5760 1080"
-BNG_WINDOW_X = -1920
+BNG_WINDOW_X = 0
 BNG_WINDOW_Y = 0
 BNG_WINDOW_WIDTH = 5760
 BNG_WINDOW_HEIGHT = 1080
@@ -462,6 +462,43 @@ def persist_beamng_display_settings(user_path: Optional[str]) -> bool:
         )
 
     return wrote_any
+
+
+def get_beamng_user_path(bng: BeamNGpy) -> Optional[str]:
+    try:
+        environment_paths = bng.system.get_environment_paths()
+    except Exception as exc:
+        logging.warning("Failed to query BeamNG user path: %s", exc)
+        return None
+
+    if isinstance(environment_paths, dict):
+        return environment_paths.get("user")
+
+    return getattr(environment_paths, "user", None)
+
+
+def bootstrap_beamng_user_path(resolved_bng_home: str) -> Optional[str]:
+    bootstrap_bng: Optional[BeamNGpy] = None
+
+    try:
+        logging.info("Bootstrapping BeamNG to resolve the active user path")
+        bootstrap_bng = BeamNGpy("localhost", 64256, home=resolved_bng_home, user=BNG_USER_PATH)
+        bootstrap_bng.open(None, "-gfx", GRAPHICS_BACKEND)
+        user_path = get_beamng_user_path(bootstrap_bng)
+        logging.info("Resolved BeamNG user path: %s", user_path)
+        return user_path
+    except Exception as exc:
+        logging.warning("Failed to bootstrap BeamNG user path: %s", exc)
+        return None
+    finally:
+        if bootstrap_bng is not None:
+            try:
+                bootstrap_bng.close()
+            except Exception as exc:
+                logging.warning("Failed to close bootstrap BeamNG session: %s", exc)
+
+        # Give BeamNG a moment to release the process/port before the real launch.
+        time.sleep(2.0)
 
 
 class BeamNGWindowController:
@@ -1480,14 +1517,19 @@ def main() -> None:
         spawn_rot=PLAYER_ROT_QUAT,
         checkpoints=RESPAWN_CHECKPOINTS,
     )
+    launch_user_path = BNG_USER_PATH
 
     try:
         obs_controller.connect()
         logging.info("Using BeamNG home: %s", resolved_bng_home)
-        if BNG_USER_PATH:
-            logging.info("Using BeamNG user path override: %s", BNG_USER_PATH)
-            persist_beamng_display_settings(BNG_USER_PATH)
-        bng = BeamNGpy("localhost", 64256, home=resolved_bng_home, user=BNG_USER_PATH)
+        if BNG_FORCE_GRAPHICS and launch_user_path is None:
+            launch_user_path = bootstrap_beamng_user_path(resolved_bng_home)
+
+        if launch_user_path:
+            logging.info("Using BeamNG user path: %s", launch_user_path)
+            persist_beamng_display_settings(launch_user_path)
+
+        bng = BeamNGpy("localhost", 64256, home=resolved_bng_home, user=launch_user_path)
         bng.open(None, "-gfx", GRAPHICS_BACKEND)
         logging.info("Connected to BeamNG.tech")
         window_controller.start()
@@ -1496,13 +1538,9 @@ def main() -> None:
             obs_controller.set_target_window(obs_window_spec)
         else:
             logging.warning("Unable to resolve BeamNG window for OBS game capture")
-        try:
-            actual_user_path = bng.system.get_environment_paths().get("user")
-        except Exception as exc:
-            logging.warning("Failed to query BeamNG user path: %s", exc)
-            actual_user_path = None
+        actual_user_path = get_beamng_user_path(bng)
 
-        if actual_user_path and actual_user_path != BNG_USER_PATH:
+        if actual_user_path and actual_user_path != launch_user_path:
             persist_beamng_display_settings(actual_user_path)
         apply_beamng_display_settings(bng)
 
