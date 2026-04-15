@@ -124,7 +124,8 @@ OBS_RECORD_DIRECTORY = ""
 OBS_CAPTURE_CURSOR = False
 OBS_GAME_CAPTURE_MODE = "window"
 
-BNG_USER_PATH = None
+# Use a dedicated BeamNG user profile so graphics and UI choices persist across runs.
+BNG_USER_PATH = r"C:\BeamNGUser\DIME"
 BNG_FORCE_GRAPHICS = True
 BNG_DISPLAY_MODE = "Window"
 BNG_RESOLUTION = "5760 1080"
@@ -133,7 +134,8 @@ BNG_WINDOW_Y = 0
 BNG_WINDOW_WIDTH = 5760
 BNG_WINDOW_HEIGHT = 1080
 BNG_WINDOW_PLACEMENT = ""
-BNG_SHOW_FPS = True
+# The FPS overlay is managed by BeamNG's UI layout, not the graphics settings API.
+BNG_SHOW_FPS = False
 BNG_ENFORCE_WINDOW = True
 BNG_WINDOW_TITLE = "BeamNG"
 BNG_WINDOW_ENFORCE_RETRIES = 60
@@ -341,7 +343,7 @@ class OBSController:
 
 
 def build_window_placement(x: int, y: int, width: int, height: int) -> str:
-    return f"0 1 -1 -1 -1 -1 {x} {y} {x + width} {y + height}"
+    return f"0 1 -1 -1 -1 -1 {x} {y} {y + height} {x + width}"
 
 
 def get_desired_display_settings() -> dict[str, str]:
