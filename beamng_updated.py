@@ -48,7 +48,10 @@ Color = tuple[float, float, float, float]
 
 MAP_NAME = "east_coast_usa"
 SCENARIO_NAME = "Driver Impairment Test"
-SCENARIO_DESCRIPTION = "You may continue when ready."
+SCENARIO_DESCRIPTION = (
+    "Please listen to the voice instructions before starting your drive. "
+    "You may continue when prompted."
+)
 SCENARIO_AUTHORS = "University of Gothenburg"
 SCENARIO_SETTINGS = {"Start Time": 0}
 
@@ -82,10 +85,13 @@ WELCOME_PROMPT_TEXT = (
     "Welcome. Please continue to drive along the route until the experimenter "
     "stops the simulation. You are required to drive safely and obey driving "
     "rules consistent with Swedish law. If you damage the vehicle, your "
-    "vehicle will be repositioned at an earlier point on the route. You may "
-    "continue when ready."
+    "vehicle will be repositioned at an earlier point on the route.  You may "
+    "continue when ready. "
 )
 OVERTAKE_MESSAGE = "Overtake the vehicle in front of you"
+SLOW_DOWN_PROMPT_TEXT = "Please slow down!"
+SLOW_DOWN_TRIGGER_SPEED_MPH = 55.0
+SLOW_DOWN_RESET_SPEED_MPH = 50.0
 
 BEAMNG_BINARY_CANDIDATES = (
     "Bin64/BeamNG.tech.x64.exe",
@@ -903,13 +909,6 @@ RESPAWN_CHECKPOINTS = [
 
 VOICE_PROMPTS = [
     PromptTrigger(
-        name="intro",
-        pos=(500, -875, 41.0),
-        radius=20.0,
-        text=WELCOME_PROMPT_TEXT,
-        gui_text=WELCOME_PROMPT_TEXT,
-    ),
-    PromptTrigger(
         name="continue_straight_1",
         pos=(470, -831, 43),
         radius=10.0,
@@ -968,9 +967,9 @@ VOICE_PROMPTS = [
     ),
     PromptTrigger(
         name="spell_dollar",
-        pos=(-175, 910, 35),
+        pos=(-800, 950, 35),
         radius=30.0,
-        text="Please spell 'Dollar'",
+        text="Attention! Please spell 'Dollar'",
     ),
     PromptTrigger(
         name="continue_straight_6",
@@ -994,6 +993,24 @@ VOICE_PROMPTS = [
         ),
     ),
     PromptTrigger(
+        name="last_meal",
+        pos=(-175, 910, 35),
+        radius=20.0,
+        text="Attention. Please tell me about the last meal you had.",
+    ),
+    PromptTrigger(
+        name="last_birthday",
+        pos=(811.88, 581.11, 65.38),
+        radius=20.0,
+        text="Attention. Please tell me what you did on your last birthday.",
+    ),
+    PromptTrigger(
+        name="spell_lonely",
+        pos=(829.9, -759.14, 42.25),
+        radius=20.0,
+        text="Attention. Please spell lonely.",
+    ),
+    PromptTrigger(
         name="continue_straight_8",
         pos=(902, -420, 44),
         radius=20.0,
@@ -1007,9 +1024,15 @@ VOICE_PROMPTS = [
     ),
     PromptTrigger(
         name="turn_right",
-        pos=(830, -759, 42),
+        pos=(544, -892, 39),
         radius=20.0,
         text="Please turn right.",
+    ),
+    PromptTrigger(
+        name="continue_straight_9",
+        pos=(827.84, -765.47, 42.2),
+        radius=20.0,
+        text="Continue straight.",
     ),
 ]
 
@@ -1033,8 +1056,8 @@ NPC_CONFIGS = [
         name="npc8",
         model="etk800",
         license_text="JYT 7T1",
-        pos=(-176.642288, 918.723938, 23.2221851),
-        rot=(0, 0, -0.662620, 0.748956),
+        pos=(17.7, 865.67, 26.178),
+        rot=(-0.003, -0.0026, -0.717, 0.696),
         color=(1.0, 1.0, 0.0, 1.0),
     ),
     NPCConfig(
@@ -1069,6 +1092,14 @@ NPC_CONFIGS = [
         rot=(0.03721029683947563, 0.06410301476716995, -0.810825526714325, 0.5805758237838745),
         color=(1.0, 0.0, 0.0, 0.6),
     ),
+    NPCConfig(
+        name="npc13",
+        model="scintilla",
+        license_text="NOM 756",
+        pos=(498.96, -881.98, 39.886),
+        rot=(-0.074618, -0.001525, -0.4296, 0.89989),
+        color=(0.0, 0.0, 0.0, 1.0),
+    ),
 ]
 
 SIGN_CONFIGS = [
@@ -1101,6 +1132,13 @@ SIGN_CONFIGS = [
     ),
 ]
 
+NPC_TRIGGER_SUPPRESSION_ZONE = Range2D(
+    x_min=350.0,
+    x_max=502.0,
+    y_min=-910.0,
+    y_max=-800.0,
+)
+
 def dist3_squared(a: Vec3, b: Vec3) -> float:
     return (
         (a[0] - b[0]) ** 2
@@ -1111,6 +1149,21 @@ def dist3_squared(a: Vec3, b: Vec3) -> float:
 
 def within_radius(a: Vec3, b: Vec3, radius: float) -> bool:
     return dist3_squared(a, b) < radius * radius
+
+
+def get_vehicle_speed_mph(vehicle: Vehicle) -> float:
+    try:
+        vehicle.sensors.poll()
+    except Exception:
+        pass
+
+    velocity = vehicle.state.get("vel")
+    if velocity is None:
+        return 0.0
+
+    vx, vy, vz = velocity
+    speed_mps = math.sqrt(vx**2 + vy**2 + vz**2)
+    return speed_mps * 2.23693629
 
 
 def quat_mul(a: Quat, b: Quat) -> Quat:
@@ -1420,6 +1473,13 @@ def configure_vehicles(
             npc_vehicle.set_color(config.color)
 
 
+def refresh_npc_colors(npc_vehicle_map: dict[str, Vehicle]) -> None:
+    for config in NPC_CONFIGS:
+        if config.color is None:
+            continue
+        npc_vehicle_map[config.name].set_color(config.color)
+
+
 def wait_for_scenario_start(bng: BeamNGpy) -> None:
     logging.info("Waiting for the user to start the scenario in BeamNG.tech...")
     while True:
@@ -1456,12 +1516,36 @@ def process_voice_prompts(
         logging.info("Prompt '%s' triggered at %s", prompt.name, player_pos)
 
 
+def process_speed_warning(
+    speech: SpeechController,
+    player_vehicle: Vehicle,
+    speed_warning_active: bool,
+) -> bool:
+    speed_mph = get_vehicle_speed_mph(player_vehicle)
+
+    if not speed_warning_active and speed_mph > SLOW_DOWN_TRIGGER_SPEED_MPH:
+        speech.say(SLOW_DOWN_PROMPT_TEXT)
+        logging.info(
+            "Speed warning triggered at %.2f mph", speed_mph
+        )
+        return True
+
+    if speed_warning_active and speed_mph < SLOW_DOWN_RESET_SPEED_MPH:
+        logging.info("Speed warning reset at %.2f mph", speed_mph)
+        return False
+
+    return speed_warning_active
+
+
 def process_npc_triggers(
     bng: BeamNGpy,
     player_pos: Vec3,
     npc_vehicle_map: dict[str, Vehicle],
     triggered_npcs: set[str],
 ) -> None:
+    if NPC_TRIGGER_SUPPRESSION_ZONE.contains(player_pos):
+        return
+
     for config in NPC_CONFIGS:
         if config.name in triggered_npcs:
             continue
@@ -1491,15 +1575,22 @@ def run_main_loop(
 ) -> None:
     played_prompts: set[str] = set()
     triggered_npcs: set[str] = set()
+    speed_warning_active = False
 
     while True:
         scenario.update()
         player_pos = player_vehicle.state["pos"]
+        refresh_npc_colors(npc_vehicle_map)
 
         if respawn_controller.process(player_vehicle, player_pos):
             time.sleep(MAIN_LOOP_SLEEP_SECONDS)
             continue
 
+        speed_warning_active = process_speed_warning(
+            speech=speech,
+            player_vehicle=player_vehicle,
+            speed_warning_active=speed_warning_active,
+        )
         process_voice_prompts(bng, speech, player_pos, played_prompts)
         process_npc_triggers(bng, player_pos, npc_vehicle_map, triggered_npcs)
 
@@ -1553,6 +1644,8 @@ def main() -> None:
         bng.load_scenario(scenario)
         logging.info("Scenario loaded")
 
+        speech.start()
+        speech.say(WELCOME_PROMPT_TEXT)
         configure_vehicles(player_vehicle, npc_vehicle_map)
         logging.info("Vehicle setup complete")
 
@@ -1567,8 +1660,6 @@ def main() -> None:
             obs_controller.set_target_window(obs_window_spec)
         enable_beamng_fps_overlay(bng)
         obs_controller.start_recording()
-
-        speech.start()
         run_main_loop(
             bng=bng,
             scenario=scenario,
