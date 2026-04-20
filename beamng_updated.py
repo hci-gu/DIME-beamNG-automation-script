@@ -1320,38 +1320,28 @@ class SpeechController:
             self._queue.put(text)
 
     def _worker(self) -> None:
-        engine = None
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 170)
-            engine.setProperty("volume", 1.0)
-        except Exception as exc:
-            logging.warning("TTS init failed in worker: %s", exc)
-
-        try:
-            while True:
-                text = self._queue.get()
-                try:
-                    if text is None:
-                        return
-
-                    logging.info("Speaking prompt: %s", text)
-                    if engine is None:
-                        logging.warning("TTS engine unavailable. Prompt was: %s", text)
-                        continue
-
-                    engine.say(text)
-                    engine.runAndWait()
-                except Exception as exc:
-                    logging.warning("TTS worker failed: %s", exc)
-                finally:
-                    self._queue.task_done()
-        finally:
+        while True:
+            text = self._queue.get()
+            engine = None
             try:
-                if engine is not None:
-                    engine.stop()
-            except Exception:
-                pass
+                if text is None:
+                    return
+
+                logging.info("Speaking prompt: %s", text)
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 170)
+                engine.setProperty("volume", 1.0)
+                engine.say(text)
+                engine.runAndWait()
+            except Exception as exc:
+                logging.warning("TTS worker failed: %s", exc)
+            finally:
+                try:
+                    if engine is not None:
+                        engine.stop()
+                except Exception:
+                    pass
+                self._queue.task_done()
 
 
 class RespawnController:
