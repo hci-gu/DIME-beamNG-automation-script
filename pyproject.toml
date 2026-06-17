@@ -1,0 +1,14 @@
+[project]
+name = "dime-beamng-automation-script"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beamngpy>=1.35.1",
+    "keyboard>=0.13.5",
+    "numpy>=2.4.6",
+    "obsws-python>=1.8.0",
+    "pillow>=12.2.0",
+    "pyttsx3>=2.99",
+]
